@@ -19,8 +19,7 @@ source "${BASE_DIR}/core/utils.sh"
 source "${BASE_DIR}/core/system.sh"
 source "${BASE_DIR}/core/memory.sh"
 source "${BASE_DIR}/core/tools.sh"
-source "${BASE_DIR}/security/nftables.sh"
-source "${BASE_DIR}/security/fail2ban.sh"
+source "${BASE_DIR}/security/ufw.sh"
 source "${BASE_DIR}/proxy/xray.sh"
 source "${BASE_DIR}/proxy/singbox.sh"
 
@@ -147,9 +146,8 @@ main_menu() {
         echo -e " ${gl_hui}┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈${gl_bai}"
         
         echo -e " ${gl_huang}[ 🛡️  安全防护与流量管控 ]${gl_bai}"
-        echo -e "   ${gl_kjlan}3.${gl_bai} 防火墙/中转管理 (Nftables)            ${gl_hong}[核心防护]${gl_bai}"
-        echo -e "   ${gl_kjlan}4.${gl_bai} 防暴力破解管理 (Fail2ban)             ${gl_hong}[白名单/解封]${gl_bai}"
-        echo -e "   ${gl_kjlan}5.${gl_bai} 核心代理服务 (Xray/Sing-box)          ${gl_hong}[Proxy]${gl_bai}"
+        echo -e "   ${gl_kjlan}3.${gl_bai} 防火墙与防爆破管理 (UFW+Fail2ban)     ${gl_hong}[核心防护]${gl_bai}"
+        echo -e "   ${gl_kjlan}4.${gl_bai} 核心代理服务 (Xray/Sing-box)          ${gl_hong}[Proxy]${gl_bai}"
         
         echo -e " ${gl_hui}┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈${gl_bai}"
         
@@ -164,9 +162,8 @@ main_menu() {
         case "$choice" in
             1) system_initialize ;;
             2) swap_management ;;
-            3) nftables_management ;;
-            4) fail2ban_management ;;
-            5) proxy_menu ;;
+            3) ufw_management ;;
+            4) proxy_menu ;;
             6) linux_info ;;
             7) linux_update ;;
             8) linux_clean ;;
