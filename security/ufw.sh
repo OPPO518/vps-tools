@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =================================================================
-#  企业级防火墙与防爆破引擎 (UFW + Fail2ban)
+#  企业级防火墙与防爆破引擎 (UFW + Fail2ban) [修复强化版]
 #  文件路径: security/ufw.sh
 #  依赖: 必须由主框架 (x.sh) source 调用，并由其提供颜色变量
 # =================================================================
@@ -15,16 +15,17 @@ detect_ssh_port() {
 # --- [输入校验] 验证端口合法性 ---
 validate_port() {
     local raw_input="$1"
-    local cleaned=$(echo "$raw_input" | tr -d ' ' | sed 's/，/,/g' | tr ':' '-')
+    # [修复] UFW 必须使用冒号 ':' 表示端口段，此处将中文逗号转英文，横杠转冒号
+    local cleaned=$(echo "$raw_input" | tr -d ' ' | sed 's/，/,/g' | tr '-' ':')
     [ -z "$cleaned" ] && return 1
     
     IFS=',' read -r -a port_array <<< "$cleaned"
     for p in "${port_array[@]}"; do
         if [[ "$p" =~ ^[0-9]+$ ]]; then
             if [ "$p" -lt 1 ] || [ "$p" -gt 65535 ]; then return 1; fi
-        elif [[ "$p" =~ ^[0-9]+-[0-9]+$ ]]; then
-            local p1=$(echo "$p" | cut -d'-' -f1)
-            local p2=$(echo "$p" | cut -d'-' -f2)
+        elif [[ "$p" =~ ^[0-9]+:[0-9]+$ ]]; then # [修复] 匹配冒号分隔的端口段
+            local p1=$(echo "$p" | cut -d':' -f1)
+            local p2=$(echo "$p" | cut -d':' -f2)
             if [ "$p1" -lt 1 ] || [ "$p1" -gt 65535 ] || [ "$p2" -lt 1 ] || [ "$p2" -gt 65535 ] || [ "$p1" -ge "$p2" ]; then 
                 return 1
             fi
@@ -51,8 +52,12 @@ init_ufw_fail2ban() {
     echo -e "${gl_huang}>>> 正在初始化 UFW & Fail2ban 安全矩阵...${gl_bai}"
     
     # 1. 安装核心组件
+    export DEBIAN_FRONTEND=noninteractive
     apt update -y >/dev/null 2>&1
     apt install -y ufw fail2ban >/dev/null 2>&1
+
+    # [关键修复] 强制开启 UFW 的 IPv6 支持，防止双栈网络单边断流
+    sed -i 's/^IPV6=no/IPV6=yes/g' /etc/default/ufw
 
     # 2. 获取当前 SSH 端口并初始化 UFW
     local ssh_p=$(detect_ssh_port)
@@ -84,7 +89,7 @@ port    = $ssh_p
 backend = systemd
 EOF
 
-    # 4. 启动服务
+    # 4. 启动服务 (必须在 UFW 启动后重启 fail2ban，确保链表正确注入)
     systemctl enable fail2ban >/dev/null 2>&1
     systemctl restart fail2ban
     
@@ -116,7 +121,7 @@ ufw_management() {
             echo -e "防自锁层: ${gl_lv}SSH Port(s) $(detect_ssh_port) [✔ 已保护]${gl_bai}"
             echo "------------------------------------------------"
             echo -e "${gl_kjlan}当前活动规则 (输入 3 可按序号删除):${gl_bai}"
-            # 过滤掉 IPv6 重复显示，使列表更清爽（可选保留）
+            # 过滤掉 active 状态行，直接显示数字列表
             ufw status numbered | grep -v "Status: active"
             echo "------------------------------------------------"
             
@@ -149,10 +154,14 @@ ufw_management() {
                     fi
                     
                     read -p "请选择协议 [ 1=tcp | 2=udp | 回车默认 both ]: " proto_input
+                    # [修复] 逗号多端口和冒号端口段在未指定协议时会导致 UFW 语法错误，必须拆分执行
                     case "$proto_input" in
-                        1|tcp) ufw allow "$VALIDATED_PORT"/tcp >/dev/null 2>&1 ;;
-                        2|udp) ufw allow "$VALIDATED_PORT"/udp >/dev/null 2>&1 ;;
-                        *) ufw allow "$VALIDATED_PORT" >/dev/null 2>&1 ;;
+                        1|tcp) ufw allow "${VALIDATED_PORT}/tcp" >/dev/null 2>&1 ;;
+                        2|udp) ufw allow "${VALIDATED_PORT}/udp" >/dev/null 2>&1 ;;
+                        *) 
+                            ufw allow "${VALIDATED_PORT}/tcp" >/dev/null 2>&1
+                            ufw allow "${VALIDATED_PORT}/udp" >/dev/null 2>&1
+                            ;;
                     esac
                     echo -e "${gl_lv}全局放行规则已添加并生效！${gl_bai}"
                     sleep 1
@@ -165,7 +174,7 @@ ufw_management() {
                         echo -e "${gl_hong}错误: 无效的 IP 地址格式！${gl_bai}"; sleep 2; continue
                     fi
                     
-                    read -p "请输入定向放行端口 (例: 3306): " port
+                    read -p "请输入定向放行端口 (例: 3306 或 1000:2000): " port
                     if ! validate_port "$port"; then
                         echo -e "${gl_hong}错误: 端口格式不合法！${gl_bai}"; sleep 2; continue
                     fi
@@ -174,7 +183,10 @@ ufw_management() {
                     case "$proto_input" in
                         1|tcp) ufw allow from "$ip" to any port "$VALIDATED_PORT" proto tcp >/dev/null 2>&1 ;;
                         2|udp) ufw allow from "$ip" to any port "$VALIDATED_PORT" proto udp >/dev/null 2>&1 ;;
-                        *) ufw allow from "$ip" to any port "$VALIDATED_PORT" >/dev/null 2>&1 ;;
+                        *) 
+                            ufw allow from "$ip" to any port "$VALIDATED_PORT" proto tcp >/dev/null 2>&1
+                            ufw allow from "$ip" to any port "$VALIDATED_PORT" proto udp >/dev/null 2>&1
+                            ;;
                     esac
                     echo -e "${gl_lv}定向放行规则已添加并生效！${gl_bai}"
                     sleep 1
