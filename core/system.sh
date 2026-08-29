@@ -1,84 +1,138 @@
 system_initialize() {
     clear
     echo -e "${gl_kjlan}################################################"
-    echo -e "#     系统初始化、时钟同步与网络调优 (Debian)  #"
+    echo -e "#    系统初始化、时钟同步与网络调优 (Debian/Ubuntu)    #"
     echo -e "################################################${gl_bai}"
     
-    # --- 1. 系统版本严格校验 ---
-    local os_ver=""
-    if grep -q "bullseye" /etc/os-release; then 
-        os_ver="11"
-        echo -e "当前系统: ${gl_huang}Debian 11 (Bullseye)${gl_bai}"
-    elif grep -q "bookworm" /etc/os-release; then 
-        os_ver="12"
-        echo -e "当前系统: ${gl_huang}Debian 12 (Bookworm)${gl_bai}"
-    else 
-        echo -e "${gl_hong}错误: 本模块仅支持 Debian 11 或 12 系统！${gl_bai}"
+    # --- 1. 系统版本严格校验与源配置 ---
+    if [ ! -f /etc/os-release ]; then
+        echo -e "${gl_hong}错误: 找不到 /etc/os-release，无法识别系统类型！${gl_bai}"
         read -p "按回车返回..."
         return
     fi
 
-    echo -e "${gl_kjlan}>>> 正在配置 Debian 官方源...${gl_bai}"
-    [ -f /etc/apt/sources.list ] && mv /etc/apt/sources.list /etc/apt/sources.list.bak_$(date +%F)
-    if [ "$os_ver" == "11" ]; then
-        echo -e "deb http://deb.debian.org/debian bullseye main contrib non-free\ndeb http://deb.debian.org/debian bullseye-updates main contrib non-free\ndeb http://security.debian.org/debian-security bullseye-security main contrib non-free\ndeb http://archive.debian.org/debian bullseye-backports main contrib non-free" > /etc/apt/sources.list
+    # 获取系统信息
+    . /etc/os-release
+    local os_id="${ID}"
+    local os_ver_major="${VERSION_ID%%.*}"
+    local os_codename="${VERSION_CODENAME}"
+
+    # 验证系统支持范围并提示
+    if [[ "$os_id" == "debian" && "$os_ver_major" -ge 10 ]]; then
+        echo -e "当前系统: ${gl_huang}Debian $VERSION_ID ($os_codename)${gl_bai}"
+    elif [[ "$os_id" == "ubuntu" && "$os_ver_major" -ge 20 ]]; then
+        echo -e "当前系统: ${gl_huang}Ubuntu $VERSION_ID ($os_codename)${gl_bai}"
     else
-        echo -e "deb http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian-security/ bookworm-security main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian/ bookworm-updates main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian/ bookworm-backports main contrib non-free non-free-firmware" > /etc/apt/sources.list
+        echo -e "${gl_hong}错误: 本模块仅支持 Debian 10+ 或 Ubuntu 20.04+ 系统！${gl_bai}"
+        read -p "按回车返回..."
+        return
+    fi
+
+    echo -e "${gl_kjlan}>>> 正在配置官方/归档源...${gl_bai}"
+    # 备份传统源
+    [ -f /etc/apt/sources.list ] && cp /etc/apt/sources.list /etc/apt/sources.list.bak_$(date +%F)
+
+    # 动态构建软件源
+    if [[ "$os_id" == "debian" ]]; then
+        if [ "$os_ver_major" == "10" ]; then
+            # Debian 10 归档源处理
+            echo -e "deb http://archive.debian.org/debian buster main contrib non-free\ndeb http://archive.debian.org/debian-security buster/updates main contrib non-free" > /etc/apt/sources.list
+            echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
+        else
+            # Debian 11/12/13+ 动态适配
+            local deb_comp="main contrib non-free"
+            # Debian 12 (Bookworm) 及 13 (Trixie) 必须添加 non-free-firmware
+            if [ "$os_ver_major" -ge 12 ]; then
+                deb_comp="main contrib non-free non-free-firmware"
+            fi
+            
+            cat > /etc/apt/sources.list << EOF
+deb http://deb.debian.org/debian/ $os_codename $deb_comp
+deb http://deb.debian.org/debian-security/ $os_codename-security $deb_comp
+deb http://deb.debian.org/debian/ $os_codename-updates $deb_comp
+deb http://deb.debian.org/debian/ $os_codename-backports $deb_comp
+EOF
+        fi
+    elif [[ "$os_id" == "ubuntu" ]]; then
+        if [ "$os_ver_major" -ge 24 ]; then
+            # Ubuntu 24.04 / 26.04+ 采用全新的 DEB822 格式
+            echo -e "${gl_huang}检测到 Ubuntu 24.04/26.04+，采用 DEB822 格式源配置...${gl_bai}"
+            [ -f /etc/apt/sources.list.d/ubuntu.sources ] && cp /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak_$(date +%F)
+            
+            # 清空传统源，防止冲突报 warning
+            > /etc/apt/sources.list
+            
+            cat > /etc/apt/sources.list.d/ubuntu.sources << EOF
+Types: deb
+URIs: http://archive.ubuntu.com/ubuntu/
+Suites: $os_codename $os_codename-updates $os_codename-backports
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://security.ubuntu.com/ubuntu/
+Suites: $os_codename-security
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+        else
+            # Ubuntu 20.04 / 22.04 传统单行格式
+            cat > /etc/apt/sources.list << EOF
+deb http://archive.ubuntu.com/ubuntu/ $os_codename main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ $os_codename-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu/ $os_codename-backports main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu/ $os_codename-security main restricted universe multiverse
+EOF
+        fi
     fi
 
     # --- 2. 系统升级与工具安装 ---
     echo -e "${gl_kjlan}>>> 正在更新系统并安装基础组件...${gl_bai}"
     export DEBIAN_FRONTEND=noninteractive
-    apt update && apt upgrade -y -o Dpkg::Options::="--force-confold" --ignore-missing
-    # 直接安装 chrony 等运维必备工具 (去掉 systemd-timesyncd)
-    apt install wget rsync socat chrony unzip -y
+    export NEEDRESTART_MODE=a
+    export NEEDRESTART_SUSPEND=1
 
-# [系统优化] SSH 深度安全加固与稳定性优化
-optimize_ssh() {
-    echo -e "${gl_kjlan}>>> 正在执行 SSH 深度安全加固与稳定性优化...${gl_bai}"
-    local ssh_conf="/etc/ssh/sshd_config"
+    apt update && apt upgrade -y -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" --ignore-missing
+    apt install -y wget rsync socat chrony unzip
+
+    # [系统优化] SSH 深度安全加固与稳定性优化
+    optimize_ssh() {
+        echo -e "${gl_kjlan}>>> 正在执行 SSH 深度安全加固与稳定性优化...${gl_bai}"
+        local ssh_conf="/etc/ssh/sshd_config"
+        
+        [ ! -f "${ssh_conf}.bak" ] && cp "$ssh_conf" "${ssh_conf}.bak"
+
+        sed -i 's/^#\?ClientAliveInterval.*/ClientAliveInterval 60/' "$ssh_conf"
+        sed -i 's/^#\?ClientAliveCountMax.*/ClientAliveCountMax 5/' "$ssh_conf"
+        sed -i 's/^#\?UseDNS.*/UseDNS no/' "$ssh_conf"
+        sed -i 's/^#\?LoginGraceTime.*/LoginGraceTime 1m/' "$ssh_conf"
+        sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 3/' "$ssh_conf"
+        sed -i 's/^#\?StrictModes.*/StrictModes yes/' "$ssh_conf"
+        sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' "$ssh_conf"
+        sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication no/' "$ssh_conf"
+
+        if sshd -t &>/dev/null; then
+            systemctl restart sshd
+        else
+            echo -e "${gl_hong}错误: SSH 配置语法检查失败，已回退配置！${gl_bai}"
+            cp "${ssh_conf}.bak" "$ssh_conf"
+            systemctl restart sshd
+        fi
+    }
     
-    # 备份原始配置
-    [ ! -f "${ssh_conf}.bak" ] && cp "$ssh_conf" "${ssh_conf}.bak"
+    optimize_ssh
 
-    # 1. 稳定性与速度优化 (心跳包 + 禁用 DNS 反查)
-    sed -i 's/^#\?ClientAliveInterval.*/ClientAliveInterval 60/' "$ssh_conf"
-    sed -i 's/^#\?ClientAliveCountMax.*/ClientAliveCountMax 5/' "$ssh_conf"
-    sed -i 's/^#\?UseDNS.*/UseDNS no/' "$ssh_conf"
-
-    # 2. 安全认证加固 (缩短宽限时间 + 限制尝试次数)
-    sed -i 's/^#\?LoginGraceTime.*/LoginGraceTime 1m/' "$ssh_conf"
-    sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 3/' "$ssh_conf"
-    sed -i 's/^#\?StrictModes.*/StrictModes yes/' "$ssh_conf"
-
-    # 3. 禁用不必要的功能 (防止 X11 转发漏洞 + 禁用键盘交互认证)
-    sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' "$ssh_conf"
-    sed -i 's/^#\?KbdInteractiveAuthentication.*/KbdInteractiveAuthentication no/' "$ssh_conf"
-
-    # 检查语法并重启
-    if sshd -t &>/dev/null; then
-        systemctl restart sshd
-    else
-        echo -e "${gl_hong}错误: SSH 配置语法检查失败，已回退配置！${gl_bai}"
-        cp "${ssh_conf}.bak" "$ssh_conf"
-        systemctl restart sshd
-    fi
-}
-    
     # --- 3. 时间同步与时区配置 (Chrony 高精度方案) ---
     echo -e "${gl_kjlan}>>> 正在配置时区与 Chrony 高可用同步源...${gl_bai}"
     timedatectl set-timezone Asia/Shanghai
 
-    # 停止并彻底屏蔽系统自带的 timesyncd，防止双服务冲突
     systemctl stop systemd-timesyncd 2>/dev/null
     systemctl mask systemd-timesyncd.service
 
-    # 备份默认配置并清理自带 NTP 节点
     [ -f /etc/chrony/chrony.conf ] && cp /etc/chrony/chrony.conf /etc/chrony/chrony.conf.bak
     sed -i 's/^pool/#pool/g' /etc/chrony/chrony.conf
     sed -i 's/^server/#server/g' /etc/chrony/chrony.conf
 
-    # 写入公共高可用 NTP 节点 (Cloudflare + Google 容灾)
     cat >> /etc/chrony/chrony.conf << EOF
 
 # 自定义高可用 NTP 服务器 (Cloudflare + Google)
@@ -92,7 +146,7 @@ EOF
     # --- 4. 动态计算内存并分配 TCP 缓冲区 ---
     echo -e "${gl_kjlan}>>> 正在计算物理内存并分配 TCP 缓冲区...${gl_bai}"
     local total_mem=$(free -m | awk '/^Mem:/{print $2}')
-    local buf_max="33554432" # 默认 32MB
+    local buf_max="33554432" 
     
     if [ "$total_mem" -le 600 ]; then
         buf_max="8388608"
@@ -161,7 +215,6 @@ net.netfilter.nf_conntrack_tcp_timeout_established = 7200
 fs.file-max = 1000000
 EOF
 
-    # 持久化提升系统文件描述符限制
     if ! grep -q "# tcp-tune" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf <<'EOF'
 
@@ -197,7 +250,7 @@ EOF
     echo -e "------------------------------------------------"
     
     if [ -f /var/run/reboot-required ]; then
-        echo -e "${gl_hong}!!! 检测到内核/组件更新，必须重启 !!!${gl_bai}"
+        echo -e "${gl_hong}!!! 检测到内核/组件更新，建议尽快重启 !!!${gl_bai}"
         read -p "是否立即重启? (y/n): " rb
         [[ "$rb" =~ ^[yY]$ ]] && reboot
     else
