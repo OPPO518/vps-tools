@@ -24,12 +24,13 @@ system_initialize() {
     local os_codename="${VERSION_CODENAME}"
     local arch=$(uname -m) # 获取硬件架构 (x86_64, aarch64 等)
 
+    # [核心修复] 使用 -ge (大于等于) 实现从 Debian 10/Ubuntu 20 到最新版本全覆盖
     if [[ "$os_id" == "debian" && "$os_ver_major" -ge 10 ]]; then
         echo -e "当前系统: ${gl_huang}Debian $VERSION_ID ($os_codename) [${arch}]${gl_bai}"
     elif [[ "$os_id" == "ubuntu" && "$os_ver_major" -ge 20 ]]; then
         echo -e "当前系统: ${gl_huang}Ubuntu $VERSION_ID ($os_codename) [${arch}]${gl_bai}"
     else
-        echo -e "${gl_hong}错误: 本模块仅支持 Debian 10+ 或 Ubuntu 20.04+ 系统！${gl_bai}"
+        echo -e "${gl_hong}错误: 本模块仅支持 Debian 10+ 或 Ubuntu 20+ 的系统！${gl_bai}"
         read -p "按回车返回..."
         return
     fi
@@ -102,7 +103,6 @@ EOF
 
     apt update && apt upgrade -y -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" --ignore-missing
     
-    # 补全了 curl (utils 依赖) 和 ufw (核心防火墙)
     apt install -y wget curl rsync socat chrony unzip ufw
 
     # [系统优化] SSH 深度安全加固与稳定性优化
@@ -143,7 +143,6 @@ EOF
     sed -i 's/^pool/#pool/g' /etc/chrony/chrony.conf
     sed -i 's/^server/#server/g' /etc/chrony/chrony.conf
 
-    # [修复] 增加幂等性检查，防止重复执行脚本导致无限追加写入
     if ! grep -q "time.cloudflare.com" /etc/chrony/chrony.conf; then
         cat >> /etc/chrony/chrony.conf << EOF
 
@@ -172,7 +171,6 @@ EOF
         echo -e "检测到大容量内存 (${total_mem}MB)，采用激进缓冲区策略 (64MB)"
     fi
 
-    # [修复] 预加载 nf_conntrack 与 BBR 模块，防止 sysctl 注入时找不到内核键值报错
     modprobe tcp_bbr 2>/dev/null
     echo "tcp_bbr" > /etc/modules-load.d/bbr.conf 2>/dev/null
     modprobe nf_conntrack 2>/dev/null
@@ -249,7 +247,6 @@ root hard nofile 1000000
 EOF
     fi
 
-    # 移除屏蔽 nf_conntrack 报错的 grep -v，模块预载后可直接静默应用
     sysctl --system >/dev/null 2>&1
 
     # --- 6. 垃圾清理 ---
