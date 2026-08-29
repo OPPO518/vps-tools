@@ -14,7 +14,7 @@ apt-get update -y && apt-get install -y git curl wget
 
 # 2. 清理旧版本并克隆最新仓库 (请将下面链接换成你的真实仓库地址)
 rm -rf "$INSTALL_DIR"
-git clone https://github.com/oppo518/vps-toolbox.git "$INSTALL_DIR"
+git clone https://github.com/oppo518/vps-tools.git "$INSTALL_DIR"
 
 # 3. 赋予主脚本执行权限
 chmod +x "$INSTALL_DIR/x.sh"
