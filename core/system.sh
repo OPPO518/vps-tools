@@ -182,8 +182,8 @@ EOF
     
     cat > /etc/sysctl.d/99-vps-optimize.conf << EOF
 # ── 网络包转发 (Proxy/VPN 必备) ──
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
+# net.ipv4.ip_forward = 1
+# net.ipv6.conf.all.forwarding = 1
 
 # ── BBR 拥塞控制 ──
 net.core.default_qdisc = fq
