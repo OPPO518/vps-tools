@@ -1,27 +1,26 @@
 system_initialize() {
     clear
     echo -e "${gl_kjlan}################################################"
-    echo -e "#    系统初始化、时钟同步与网络调优 (Debian/Ubuntu)    #"
+    echo -e "#    系统初始化、时钟同步与网络调优 (全架构版)    #"
     echo -e "################################################${gl_bai}"
     
-    # --- 1. 系统版本严格校验与源配置 ---
+    # --- 1. 系统与架构严格校验 ---
     if [ ! -f /etc/os-release ]; then
         echo -e "${gl_hong}错误: 找不到 /etc/os-release，无法识别系统类型！${gl_bai}"
         read -p "按回车返回..."
         return
     fi
 
-    # 获取系统信息
     . /etc/os-release
     local os_id="${ID}"
     local os_ver_major="${VERSION_ID%%.*}"
     local os_codename="${VERSION_CODENAME}"
+    local arch=$(uname -m) # 获取硬件架构 (x86_64, aarch64 等)
 
-    # 验证系统支持范围并提示
     if [[ "$os_id" == "debian" && "$os_ver_major" -ge 10 ]]; then
-        echo -e "当前系统: ${gl_huang}Debian $VERSION_ID ($os_codename)${gl_bai}"
+        echo -e "当前系统: ${gl_huang}Debian $VERSION_ID ($os_codename) [${arch}]${gl_bai}"
     elif [[ "$os_id" == "ubuntu" && "$os_ver_major" -ge 20 ]]; then
-        echo -e "当前系统: ${gl_huang}Ubuntu $VERSION_ID ($os_codename)${gl_bai}"
+        echo -e "当前系统: ${gl_huang}Ubuntu $VERSION_ID ($os_codename) [${arch}]${gl_bai}"
     else
         echo -e "${gl_hong}错误: 本模块仅支持 Debian 10+ 或 Ubuntu 20.04+ 系统！${gl_bai}"
         read -p "按回车返回..."
@@ -29,22 +28,16 @@ system_initialize() {
     fi
 
     echo -e "${gl_kjlan}>>> 正在配置官方/归档源...${gl_bai}"
-    # 备份传统源
     [ -f /etc/apt/sources.list ] && cp /etc/apt/sources.list /etc/apt/sources.list.bak_$(date +%F)
 
     # 动态构建软件源
     if [[ "$os_id" == "debian" ]]; then
         if [ "$os_ver_major" == "10" ]; then
-            # Debian 10 归档源处理
             echo -e "deb http://archive.debian.org/debian buster main contrib non-free\ndeb http://archive.debian.org/debian-security buster/updates main contrib non-free" > /etc/apt/sources.list
             echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
         else
-            # Debian 11/12/13+ 动态适配
             local deb_comp="main contrib non-free"
-            # Debian 12 (Bookworm) 及 13 (Trixie) 必须添加 non-free-firmware
-            if [ "$os_ver_major" -ge 12 ]; then
-                deb_comp="main contrib non-free non-free-firmware"
-            fi
+            [ "$os_ver_major" -ge 12 ] && deb_comp="main contrib non-free non-free-firmware"
             
             cat > /etc/apt/sources.list << EOF
 deb http://deb.debian.org/debian/ $os_codename $deb_comp
@@ -54,34 +47,41 @@ deb http://deb.debian.org/debian/ $os_codename-backports $deb_comp
 EOF
         fi
     elif [[ "$os_id" == "ubuntu" ]]; then
+        # 核心更新：根据硬件架构匹配对应的 Ubuntu 源链接
+        local ubuntu_repo="http://archive.ubuntu.com/ubuntu/"
+        local ubuntu_sec_repo="http://security.ubuntu.com/ubuntu/"
+        
+        # 如果是 ARM 或其它架构，切换到 ports 专用源
+        if [[ "$arch" == "aarch64" || "$arch" == *"arm"* || "$arch" == "riscv64" ]]; then
+            ubuntu_repo="http://ports.ubuntu.com/ubuntu-ports/"
+            ubuntu_sec_repo="http://ports.ubuntu.com/ubuntu-ports/"
+            echo -e "${gl_huang}检测到非 x86 架构，已切换至 Ubuntu Ports 镜像源...${gl_bai}"
+        fi
+
         if [ "$os_ver_major" -ge 24 ]; then
-            # Ubuntu 24.04 / 26.04+ 采用全新的 DEB822 格式
-            echo -e "${gl_huang}检测到 Ubuntu 24.04/26.04+，采用 DEB822 格式源配置...${gl_bai}"
+            echo -e "${gl_huang}采用 DEB822 格式源配置 (Ubuntu 24.04+)...${gl_bai}"
             [ -f /etc/apt/sources.list.d/ubuntu.sources ] && cp /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak_$(date +%F)
-            
-            # 清空传统源，防止冲突报 warning
             > /etc/apt/sources.list
             
             cat > /etc/apt/sources.list.d/ubuntu.sources << EOF
 Types: deb
-URIs: http://archive.ubuntu.com/ubuntu/
+URIs: $ubuntu_repo
 Suites: $os_codename $os_codename-updates $os_codename-backports
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
 Types: deb
-URIs: http://security.ubuntu.com/ubuntu/
+URIs: $ubuntu_sec_repo
 Suites: $os_codename-security
 Components: main restricted universe multiverse
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 EOF
         else
-            # Ubuntu 20.04 / 22.04 传统单行格式
             cat > /etc/apt/sources.list << EOF
-deb http://archive.ubuntu.com/ubuntu/ $os_codename main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu/ $os_codename-updates main restricted universe multiverse
-deb http://archive.ubuntu.com/ubuntu/ $os_codename-backports main restricted universe multiverse
-deb http://security.ubuntu.com/ubuntu/ $os_codename-security main restricted universe multiverse
+deb $ubuntu_repo $os_codename main restricted universe multiverse
+deb $ubuntu_repo $os_codename-updates main restricted universe multiverse
+deb $ubuntu_repo $os_codename-backports main restricted universe multiverse
+deb $ubuntu_sec_repo $os_codename-security main restricted universe multiverse
 EOF
         fi
     fi
@@ -240,10 +240,11 @@ EOF
     local fw_v4=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
     local fw_v6=$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null)
     
-    echo -e " 1. BBR 拥塞控制: \t${gl_kjlan}${bbr_status}${gl_bai}"
-    echo -e " 2. TCP 缓冲上限: \t${gl_kjlan}${wmem_mb} MB${gl_bai}"
-    echo -e " 3. 系统网络转发: \t${gl_bai}v4->${fw_v4} v6->${fw_v6}${gl_bai}"
-    echo -e " 4. 当前系统时间: \t${gl_bai}$(date "+%Y-%m-%d %H:%M:%S") (CST)${gl_bai}"
+    echo -e " 1. 硬件架构: \t${gl_kjlan}${arch}${gl_bai}"
+    echo -e " 2. BBR 拥塞控制: \t${gl_kjlan}${bbr_status}${gl_bai}"
+    echo -e " 3. TCP 缓冲上限: \t${gl_kjlan}${wmem_mb} MB${gl_bai}"
+    echo -e " 4. 系统网络转发: \t${gl_bai}v4->${fw_v4} v6->${fw_v6}${gl_bai}"
+    echo -e " 5. 当前系统时间: \t${gl_bai}$(date "+%Y-%m-%d %H:%M:%S") (CST)${gl_bai}"
     echo -e "------------------------------------------------"
     echo -e "${gl_huang} Chrony 同步源状态 (chronyc sources -v):${gl_bai}"
     chronyc sources -v
