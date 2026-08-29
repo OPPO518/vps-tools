@@ -1,3 +1,10 @@
+#!/bin/bash
+
+# =========================================================
+#  模块: core/system.sh
+#  功能: 系统初始化、时钟同步与网络调优 (全架构兼容版)
+# =========================================================
+
 system_initialize() {
     clear
     echo -e "${gl_kjlan}################################################"
@@ -33,7 +40,8 @@ system_initialize() {
     # 动态构建软件源
     if [[ "$os_id" == "debian" ]]; then
         if [ "$os_ver_major" == "10" ]; then
-            echo -e "deb http://archive.debian.org/debian buster main contrib non-free\ndeb http://archive.debian.org/debian-security buster/updates main contrib non-free" > /etc/apt/sources.list
+            # 修复 Debian 10 源归档后的 GPG 过期报错问题，强制添加 [trusted=yes]
+            echo -e "deb [trusted=yes] http://archive.debian.org/debian buster main contrib non-free\ndeb [trusted=yes] http://archive.debian.org/debian-security buster/updates main contrib non-free" > /etc/apt/sources.list
             echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
         else
             local deb_comp="main contrib non-free"
@@ -93,7 +101,9 @@ EOF
     export NEEDRESTART_SUSPEND=1
 
     apt update && apt upgrade -y -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" --ignore-missing
-    apt install -y wget rsync socat chrony unzip
+    
+    # 【修复】补全了 curl (utils 依赖) 和 ufw (核心防火墙)
+    apt install -y wget curl rsync socat chrony unzip ufw
 
     # [系统优化] SSH 深度安全加固与稳定性优化
     optimize_ssh() {
@@ -159,11 +169,19 @@ EOF
         echo -e "检测到大容量内存 (${total_mem}MB)，采用激进缓冲区策略 (64MB)"
     fi
 
+    # 【修复】预加载 BBR 模块，防止低版本内核未装载报错
+    modprobe tcp_bbr 2>/dev/null
+    echo "tcp_bbr" > /etc/modules-load.d/bbr.conf 2>/dev/null
+
     # --- 5. 写入 TCP 深度调优与 BBR 配置 ---
     echo -e "${gl_kjlan}>>> 正在写入 TCP 深度调优与 BBR 配置...${gl_bai}"
     rm -f /etc/sysctl.d/99-vps-optimize.conf
     
     cat > /etc/sysctl.d/99-vps-optimize.conf << EOF
+# ── 网络包转发 (Proxy/VPN 必备) ──
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+
 # ── BBR 拥塞控制 ──
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
