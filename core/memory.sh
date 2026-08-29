@@ -1,21 +1,24 @@
 # ==========================================
-#  内存管理模块 (ZRAM + 智能 Swapfile)
+#  内存管理模块 (ZRAM + 智能 Swapfile) [全兼容升级版]
 # ==========================================
 
 swap_management() {
     while true; do
         clear
+        # 尝试唤醒 ZRAM 内核模块 (防精简系统未加载)
+        modprobe zram 2>/dev/null
+        
         # --- [状态采集逻辑] ---
         local total_mem=$(free -m | awk '/^Mem:/{print $2}')
         local swap_total=$(free -m | grep Swap | awk '{print $2}')
-        local zram_status=$(lsmod | grep -q zram && echo -e "${gl_lv}● 已启用${gl_bai}" || echo -e "${gl_hong}○ 未启用${gl_bai}")
+        local zram_status=$(lsmod | grep -q zram && echo -e "${gl_lv}● 已启用${gl_bai}" || echo -e "${gl_hong}○ 未启用/不支持${gl_bai}")
         local trim_timer=$(systemctl is-active fstrim.timer 2>/dev/null | grep -q "active" && echo -e "${gl_lv}已开启(每周)${gl_bai}" || echo -e "${gl_huang}未开启${gl_bai}")
         local trim_check=$(lsblk -nd -o DISC-MAX 2>/dev/null | awk '$1 != "0B" {print $1}' | head -n 1)
         local trim_support=$( [ -n "$trim_check" ] && echo -e "${gl_lv}支持${gl_bai}" || echo -e "${gl_huang}未知/不支持${gl_bai}" )
 
         # --- 渲染新版 UI ---
         echo -e "${gl_kjlan}╭────────────────────────────────────────────────────────────────╮${gl_bai}"
-        echo -e "${gl_kjlan}│${gl_bai}               VPS 进阶内存调度与 ZRAM 优化中心               ${gl_kjlan}│${gl_bai}"
+        echo -e "${gl_kjlan}│${gl_bai}                VPS 进阶内存调度与 ZRAM 优化中心                ${gl_kjlan}│${gl_bai}"
         echo -e "${gl_kjlan}╰────────────────────────────────────────────────────────────────╯${gl_bai}"
         echo -e " 内存调度状态: ${zram_status}"
         echo -e " 物理内存总量: ${gl_bai}${total_mem} MB${gl_bai}  |  当前交换总量: ${gl_bai}${swap_total} MB${gl_bai}"
@@ -43,7 +46,11 @@ swap_management() {
             1)
                 echo -e "${gl_huang}>>> 正在部署进阶内存优化方案...${gl_bai}"
                 
-                # --- 1. 清理旧环境 ---
+                # --- 1. 清理旧环境并无感安装 (防 Ubuntu 卡死) ---
+                export DEBIAN_FRONTEND=noninteractive
+                export NEEDRESTART_MODE=a
+                export NEEDRESTART_SUSPEND=1
+                
                 apt update && apt install -y zram-tools
                 swapoff -a 2>/dev/null
                 sed -i '/swapfile/d' /etc/fstab
@@ -98,6 +105,13 @@ EOF
 
                     if [ ! -f /swapfile ]; then
                         echo -e "${gl_huang}正在创建物理交换文件...${gl_bai}"
+                        
+                        # [重要防错]: 判断是否是 btrfs 文件系统，BTRFS 创建 swap 必须禁用写时复制 (CoW)
+                        if df -T / | grep -q "btrfs"; then
+                            touch /swapfile
+                            chattr +C /swapfile 2>/dev/null
+                        fi
+
                         dd if=/dev/zero of=/swapfile bs=1M count=$swap_size status=progress
                         chmod 600 /swapfile
                         mkswap /swapfile
@@ -123,7 +137,10 @@ EOF
                 echo -e "${gl_huang}正在回滚配置...${gl_bai}"
                 swapoff -a 2>/dev/null
                 systemctl stop zramswap 2>/dev/null
+                
+                export DEBIAN_FRONTEND=noninteractive
                 apt purge -y zram-tools
+                
                 rm -f /swapfile /etc/sysctl.d/90-memory-tune.conf /root/test_io_temp
                 sed -i '/swapfile/d' /etc/fstab
                 echo -e "${gl_lv}卸载完成，内存配置已恢复原生状态。${gl_bai}"
