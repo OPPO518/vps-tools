@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # ==========================================
 #  内存管理模块 (ZRAM + 智能 Swapfile) [终极进化版]
 # ==========================================
@@ -15,6 +17,7 @@ swap_management() {
         local trim_timer=$(systemctl is-active fstrim.timer 2>/dev/null | grep -q "active" && echo -e "${gl_lv}已开启(每周)${gl_bai}" || echo -e "${gl_huang}未开启${gl_bai}")
         local trim_check=$(lsblk -nd -o DISC-MAX 2>/dev/null | awk '$1 != "0B" {print $1}' | head -n 1)
         local trim_support=$( [ -n "$trim_check" ] && echo -e "${gl_lv}支持${gl_bai}" || echo -e "${gl_huang}未知/不支持${gl_bai}" )
+        local virt_type=$(systemd-detect-virt 2>/dev/null || echo "unknown")
 
         # --- 渲染新版 UI ---
         echo -e "${gl_kjlan}╭────────────────────────────────────────────────────────────────╮${gl_bai}"
@@ -23,6 +26,13 @@ swap_management() {
         echo -e " 内存调度状态: ${zram_status}"
         echo -e " 物理内存总量: ${gl_bai}${total_mem} MB${gl_bai}  |  当前交换总量: ${gl_bai}${swap_total} MB${gl_bai}"
         echo -e " 自动 Trim:    ${trim_timer}  |  硬件 Trim 支持: ${trim_support}"
+        
+        if [[ "$virt_type" == "lxc" || "$virt_type" == "openvz" || "$virt_type" == "wsl" ]]; then
+            echo -e " 虚拟化架构:   ${gl_hong}${virt_type} (警告: 容器环境可能无法操作 Swap)${gl_bai}"
+        else
+            echo -e " 虚拟化架构:   ${gl_lv}${virt_type}${gl_bai}"
+        fi
+        
         echo -e "${gl_kjlan}------------------------------------------------------------------${gl_bai}"
         
         echo -e " ${gl_huang}[ ⚡ 自动化优化策略 ]${gl_bai}"
@@ -46,16 +56,18 @@ swap_management() {
             1)
                 echo -e "${gl_huang}>>> 正在分析机器配置并部署进阶内存优化方案...${gl_bai}"
                 
-                # --- 1. 环境净化与静默安装 (防 Ubuntu 弹窗卡死) ---
+                # --- 1. 环境净化与静默安装 ---
                 export DEBIAN_FRONTEND=noninteractive
                 export NEEDRESTART_MODE=a
                 export NEEDRESTART_SUSPEND=1
                 
-                apt update -y >/dev/null 2>&1
+                apt update >/dev/null 2>&1
                 apt install -y zram-tools >/dev/null 2>&1
                 
-                # 卸载旧的 swapfile 释放空间
-                swapoff -a 2>/dev/null
+                # 仅卸载 /swapfile，避免 swapoff -a 强杀 ZRAM 或其他挂载点导致 OOM
+                if grep -q "/swapfile" /proc/swaps; then
+                    swapoff /swapfile 2>/dev/null
+                fi
                 rm -f /swapfile
                 sed -i '/swapfile/d' /etc/fstab
 
@@ -66,21 +78,18 @@ swap_management() {
                 local cache_pressure=100
 
                 if [ "$total_mem" -le 1024 ]; then
-                    # Tier 1: 极小内存架构 (<= 1GB)
-                    echo -e "${gl_huang}[策略] 判定为极小内存架构，启用 生存保命模式...${gl_bai}"
+                    echo -e "${gl_huang}[策略] 判定为极小内存架构 (<=1GB)，启用 生存保命模式...${gl_bai}"
                     z_percent=100
                     swap_size=$((total_mem * 2))
                     [ "$swap_size" -gt 2048 ] && swap_size=2048 # 最高封顶2G
                     swappiness=85
                 elif [ "$total_mem" -lt 6144 ]; then
-                    # Tier 2: 主流内存架构 (1GB ~ 6GB)
-                    echo -e "${gl_lv}[策略] 判定为主流内存架构，启用 性能均衡模式...${gl_bai}"
+                    echo -e "${gl_lv}[策略] 判定为主流内存架构 (1~6GB)，启用 性能均衡模式...${gl_bai}"
                     z_percent=50
                     swap_size=2048
                     swappiness=60
                 else
-                    # Tier 3: 大内存架构 (>= 6GB)
-                    echo -e "${gl_kjlan}[策略] 判定为大内存架构，启用 极致缓存模式...${gl_bai}"
+                    echo -e "${gl_kjlan}[策略] 判定为大内存架构 (>=6GB)，启用 极致缓存模式...${gl_bai}"
                     z_percent=25
                     swap_size=0       # 彻底禁用磁盘Swap
                     swappiness=10
@@ -93,14 +102,15 @@ ALGO=zstd
 PERCENT=$z_percent
 PRIORITY=100
 EOF
-                systemctl restart zramswap
+                systemctl restart zramswap 2>/dev/null
 
                 # --- 4. 磁盘 I/O 测速与 Swapfile 部署 ---
                 if [ "$swap_size" -gt 0 ]; then
                     echo -e "${gl_kjlan}>>> 正在探测磁盘底层真实 I/O (物理直写防抖测速)...${gl_bai}"
                     
                     local start_time=$(date +%s%N)
-                    dd if=/dev/zero of=/root/test_io_temp bs=1M count=100 oflag=direct >/dev/null 2>&1
+                    # 替换 oflag=direct 为 conv=fdatasync，提升在 ZFS/容器 环境的兼容性
+                    dd if=/dev/zero of=/root/test_io_temp bs=1M count=100 conv=fdatasync >/dev/null 2>&1
                     local end_time=$(date +%s%N)
                     rm -f /root/test_io_temp
                     
@@ -115,16 +125,20 @@ EOF
                     else
                         echo -e "${gl_lv} > 磁盘状态良好，正在创建 ${swap_size}MB 物理安全气囊...${gl_bai}"
                         
-                        # [防错机制] 针对 BTRFS 系统的写时复制(CoW)拦截
+                        # [加速与防错机制] 
                         if df -T / | grep -q "btrfs"; then
+                            # BTRFS 专属安全流程：禁用 CoW 并强制使用 dd
                             touch /swapfile
                             chattr +C /swapfile 2>/dev/null
+                            dd if=/dev/zero of=/swapfile bs=1M count=$swap_size status=progress
+                        else
+                            # EXT4/XFS 提速：优先尝试 fallocate 瞬间分配，失败再退回 dd
+                            fallocate -l ${swap_size}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$swap_size status=progress
                         fi
 
-                        dd if=/dev/zero of=/swapfile bs=1M count=$swap_size status=progress
                         chmod 600 /swapfile
-                        mkswap /swapfile
-                        swapon --priority -2 /swapfile
+                        mkswap /swapfile >/dev/null 2>&1
+                        swapon --priority -2 /swapfile 2>/dev/null
                         echo '/swapfile none swap sw,pri=-2 0 0' >> /etc/fstab
                     fi
                 else
@@ -136,7 +150,7 @@ EOF
 vm.swappiness=$swappiness
 vm.vfs_cache_pressure=$cache_pressure
 EOF
-                sysctl -p /etc/sysctl.d/90-memory-tune.conf >/dev/null
+                sysctl --system >/dev/null 2>&1
 
                 # --- 6. 开启 SSD 自动垃圾回收机制 (Trim) ---
                 systemctl enable --now fstrim.timer >/dev/null 2>&1
@@ -147,7 +161,9 @@ EOF
                 
             2)
                 echo -e "${gl_huang}正在彻底回滚内存配置...${gl_bai}"
-                swapoff -a 2>/dev/null
+                
+                # 安全卸载
+                swapoff /swapfile 2>/dev/null
                 systemctl stop zramswap 2>/dev/null
                 
                 export DEBIAN_FRONTEND=noninteractive
@@ -155,6 +171,7 @@ EOF
                 
                 rm -f /swapfile /etc/sysctl.d/90-memory-tune.conf /root/test_io_temp
                 sed -i '/swapfile/d' /etc/fstab
+                
                 # 重新应用默认 sysctl 参数
                 sysctl --system >/dev/null 2>&1 
                 
@@ -177,7 +194,7 @@ EOF
                 if fstrim -v /; then
                     echo -e "${gl_lv}✅ Trim 优化执行成功！${gl_bai}"
                 else
-                    echo -e "${gl_hong}❌ 执行失败，当前磁盘环境可能不支持 Trim。${gl_bai}"
+                    echo -e "${gl_hong}❌ 执行失败，当前磁盘环境可能不支持 Trim，或为不支持的容器环境。${gl_bai}"
                 fi
                 read -p "按回车继续..."
                 ;;
