@@ -102,7 +102,7 @@ EOF
 
     apt update && apt upgrade -y -o Dpkg::Options::="--force-confold" -o Dpkg::Options::="--force-confdef" --ignore-missing
     
-    # 【修复】补全了 curl (utils 依赖) 和 ufw (核心防火墙)
+    # 补全了 curl (utils 依赖) 和 ufw (核心防火墙)
     apt install -y wget curl rsync socat chrony unzip ufw
 
     # [系统优化] SSH 深度安全加固与稳定性优化
@@ -143,12 +143,15 @@ EOF
     sed -i 's/^pool/#pool/g' /etc/chrony/chrony.conf
     sed -i 's/^server/#server/g' /etc/chrony/chrony.conf
 
-    cat >> /etc/chrony/chrony.conf << EOF
+    # [修复] 增加幂等性检查，防止重复执行脚本导致无限追加写入
+    if ! grep -q "time.cloudflare.com" /etc/chrony/chrony.conf; then
+        cat >> /etc/chrony/chrony.conf << EOF
 
 # 自定义高可用 NTP 服务器 (Cloudflare + Google)
 server time.cloudflare.com iburst
 server time.google.com iburst
 EOF
+    fi
 
     systemctl enable --now chrony
     systemctl restart chrony
@@ -169,9 +172,11 @@ EOF
         echo -e "检测到大容量内存 (${total_mem}MB)，采用激进缓冲区策略 (64MB)"
     fi
 
-    # 【修复】预加载 BBR 模块，防止低版本内核未装载报错
+    # [修复] 预加载 nf_conntrack 与 BBR 模块，防止 sysctl 注入时找不到内核键值报错
     modprobe tcp_bbr 2>/dev/null
     echo "tcp_bbr" > /etc/modules-load.d/bbr.conf 2>/dev/null
+    modprobe nf_conntrack 2>/dev/null
+    echo "nf_conntrack" > /etc/modules-load.d/nf_conntrack.conf 2>/dev/null
 
     # --- 5. 写入 TCP 深度调优与 BBR 配置 ---
     echo -e "${gl_kjlan}>>> 正在写入 TCP 深度调优与 BBR 配置...${gl_bai}"
@@ -244,7 +249,8 @@ root hard nofile 1000000
 EOF
     fi
 
-    sysctl --system 2>/dev/null | grep -v "nf_conntrack" >/dev/null
+    # 移除屏蔽 nf_conntrack 报错的 grep -v，模块预载后可直接静默应用
+    sysctl --system >/dev/null 2>&1
 
     # --- 6. 垃圾清理 ---
     echo -e "${gl_kjlan}>>> 正在清理系统缓存垃圾...${gl_bai}"
