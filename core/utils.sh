@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# =========================================================
+#  模块: core/utils.sh
+#  功能: 全局变量、颜色、通用辅助函数 (UFW 兼容版)
+# =========================================================
+
 # ===== 全局颜色变量 =====
 gl_hong='\033[31m'
 gl_lv='\033[32m'
@@ -61,34 +66,34 @@ output_status() {
 
 # ===== 辅助函数: 时区检测 =====
 current_timezone() {
-    if grep -q 'Alpine' /etc/issue; then 
+    if grep -q 'Alpine' /etc/issue 2>/dev/null; then 
         date +"%Z %z"
     else 
         timedatectl | grep "Time zone" | awk '{print $3}'
     fi
 }
 
-# ===== 辅助函数: 提取 SSH 端口 (去重优化) =====
+# ===== 辅助函数: 提取真实 SSH 端口 (防自锁增强版) =====
 detect_ssh_port() {
-    local port=$(ss -tlnp | grep 'sshd' | awk '{print $4}' | awk -F: '{print $NF}' | head -n 1)
-    if [ -z "$port" ]; then port="22"; fi
-    echo "$port"
+    # 直接读取 SSHD 运行时配置，比 ss -tlnp 抓进程更准确，且支持多个端口返回 (逗号分隔)
+    local ports=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' | paste -sd "," -)
+    echo "${ports:-22}"
 }
 
-# ===== 辅助函数: 自动放行端口 (去重优化) =====
+# ===== 辅助函数: 自动放行端口 (UFW 适配版) =====
 ensure_port_open() {
     local port="$1"
-    if command -v nft &>/dev/null; then
-        local t="" s="" su=""
-        if nft list tables | grep -q "my_landing"; then t="my_landing"; s="allowed_tcp"; su="allowed_udp";
-        elif nft list tables | grep -q "my_transit"; then t="my_transit"; s="local_tcp"; su="local_udp"; else return; fi
-        
-        if ! nft list set inet $t $s 2>/dev/null | grep -q "$port"; then
-            echo -e "${gl_huang}检测到防火墙，自动放行端口 $port...${gl_bai}"
-            nft add element inet $t $s { $port }; nft add element inet $t $su { $port }
-            # 安全保存
-            echo "#!/usr/sbin/nft -f" > /etc/nftables.conf
-            nft list ruleset >> /etc/nftables.conf
+    
+    # 检查是否安装了 ufw 并且处于 active 状态
+    if command -v ufw &>/dev/null; then
+        if ufw status | grep -qw "active"; then
+            # 检查端口是否已经被放行，避免重复添加导致输出冗余
+            if ! ufw status | grep -qW "$port"; then
+                echo -e "${gl_huang}检测到 UFW 防火墙运行中，正在自动放行端口 $port...${gl_bai}"
+                # 静默放行 tcp 和 udp
+                ufw allow "$port"/tcp >/dev/null 2>&1
+                ufw allow "$port"/udp >/dev/null 2>&1
+            fi
         fi
     fi
 }
