@@ -70,12 +70,12 @@ update_script() {
     if git pull origin main; then
         echo -e "${gl_lv}更新成功！正在重启工具箱...${gl_bai}"
         
-        # 【新增的修复代码】每次拉取完，重新给自己赋予执行权限
+        # 每次拉取完，重新给自己赋予执行权限
         chmod +x "$BASE_DIR/x.sh"
         
         sleep 1
-        # 重新执行自身，加载最新的模块
-        exec /usr/local/bin/x
+        # [修复] 强制通过绝对路径和 bash 重新执行自身，防止软链接丢失或未安装时报错
+        exec bash "$BASE_DIR/x.sh"
     else
         echo -e "${gl_hong}更新失败，请检查网络或 GitHub 链接！${gl_bai}"
         sleep 2
