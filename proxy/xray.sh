@@ -7,7 +7,7 @@ xray_management() {
 
     install_xray() {
         echo -e "${gl_huang}正在调用官方脚本安装 (User=root)...${gl_bai}"
-        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
+        bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install 
         if [ $? -eq 0 ]; then
             echo -e "${gl_lv}安装/升级成功！${gl_bai}"
             $BIN_PATH version | head -n 1
