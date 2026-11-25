@@ -6,11 +6,7 @@
 #  依赖: 必须由主框架 (x.sh) source 调用，并由其提供颜色变量
 # =================================================================
 
-# --- [辅助函数] 动态获取真实 SSH 端口 ---
-detect_ssh_port() {
-    local ports=$(sshd -T 2>/dev/null | grep -i '^port ' | awk '{print $2}' | paste -sd "," -)
-    echo "${ports:-22}"
-}
+# 注: detect_ssh_port 由 core/utils.sh 提供，此处不再重复定义。
 
 # --- [输入校验] 验证端口合法性 ---
 validate_port() {
@@ -49,11 +45,17 @@ validate_ip() {
 # [核心引擎] 初始化 UFW & Fail2ban
 # =================================================================
 init_ufw_fail2ban() {
+    # --- 0. 幂等判断：已初始化则询问；选 n 不改动，选 y 先还原 ---
+    confirm_rerun "ufw" "防火墙初始化" || return 0
+
     echo -e "${gl_huang}>>> 正在初始化 UFW & Fail2ban 安全矩阵...${gl_bai}"
-    
+
+    # 0.5 登记将被改写的配置文件
+    track_config "ufw" "/etc/default/ufw" "/etc/fail2ban/jail.local"
+
     # 1. 安装核心组件
     export DEBIAN_FRONTEND=noninteractive
-    apt update -y >/dev/null 2>&1
+    apt update >/dev/null 2>&1
     apt install -y ufw fail2ban >/dev/null 2>&1
 
     # [关键修复] 强制开启 UFW 的 IPv6 支持，防止双栈网络单边断流
@@ -61,20 +63,35 @@ init_ufw_fail2ban() {
 
     # 2. 获取当前 SSH 端口并初始化 UFW
     local ssh_p=$(detect_ssh_port)
-    
+
+    # 备份现有规则：在 reset 之前把当前规则快照存下来，避免误清后无法恢复
+    local ufw_backup_dir=$(backup_dir_for "ufw")
+    mkdir -p "$ufw_backup_dir"
+    ufw status numbered > "${ufw_backup_dir}/rules.before.$(date +%F_%H%M%S).txt" 2>/dev/null
+    cp -a /etc/fail2ban/jail.local "${ufw_backup_dir}/jail.local.before.$(date +%F_%H%M%S)" 2>/dev/null
+    echo -e "${gl_hui}已备份当前 UFW 规则到 ${ufw_backup_dir}${gl_bai}"
+
     echo "y" | ufw reset >/dev/null 2>&1
     ufw default deny incoming
     ufw default allow outgoing
-    
+
     # 循环放行多个 SSH 端口，防止自锁
     IFS=',' read -r -a ssh_array <<< "$ssh_p"
     for p in "${ssh_array[@]}"; do
         ufw allow "$p"/tcp comment 'SSH_Lifeline' >/dev/null 2>&1
     done
-    
+
     echo "y" | ufw enable >/dev/null 2>&1
 
     # 3. 配置 Fail2ban (接管 UFW)
+    # backend 回退：journal 不可用时改用 auth.log，避免抓不到登录失败
+    local fb_backend="systemd"
+    local fb_logpath=""
+    if ! journalctl -u ssh -n 1 >/dev/null 2>&1 && ! journalctl -u sshd -n 1 >/dev/null 2>&1; then
+        fb_backend="auto"
+        fb_logpath="logpath  = /var/log/auth.log"
+    fi
+
     cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
 ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
@@ -86,14 +103,17 @@ banaction = ufw
 [sshd]
 enabled = true
 port    = $ssh_p
-backend = systemd
+backend = $fb_backend
+$fb_logpath
 EOF
 
     # 4. 启动服务 (必须在 UFW 启动后重启 fail2ban，确保链表正确注入)
     systemctl enable fail2ban >/dev/null 2>&1
     systemctl restart fail2ban
-    
+
+    module_state_mark_done "ufw"
     echo -e "${gl_lv}✔ 初始化完成！UFW & Fail2ban 已成功接管系统防御。${gl_bai}"
+    echo -e "${gl_hui}Fail2ban 日志后端: ${fb_backend}${gl_bai}"
     sleep 2
 }
 
@@ -114,7 +134,15 @@ ufw_management() {
         echo -e "################################################${gl_bai}"
         
         local ufw_status=$(ufw status | grep -w "Status: active")
-        
+
+        local fw_badge
+        if module_state_is_done "ufw"; then
+            fw_badge="${gl_lv}● 已初始化${gl_bai} (${gl_hui}$(module_state_last_run "ufw")${gl_bai})"
+        else
+            fw_badge="${gl_huang}○ 未初始化${gl_bai}"
+        fi
+        echo -e "配置状态:     ${fw_badge}"
+
         if [ -n "$ufw_status" ]; then
             echo -e "底层引擎: ${gl_lv}UFW Active [✔ 已接管]${gl_bai}"
             echo -e "防爆破层: ${gl_lv}Fail2ban [✔ 已联动]${gl_bai}"
@@ -229,6 +257,7 @@ ufw_management() {
                         ufw disable >/dev/null 2>&1
                         systemctl stop fail2ban >/dev/null 2>&1
                         systemctl disable fail2ban >/dev/null 2>&1
+                        module_state_clear "ufw"
                         echo -e "${gl_lv}所有防御设施已撤离，系统回归开放状态。${gl_bai}"
                         sleep 2
                     fi
